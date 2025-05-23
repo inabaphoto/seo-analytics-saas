@@ -1,0 +1,54 @@
+# Supabase プロジェクト設定
+
+[project]
+# プロジェクトIDは実際のプロジェクト作成後に更新してください
+id = "your-project-id"
+
+[api]
+# APIバージョン
+enabled = true
+# APIのポート
+port = 54321
+schemas = ["public", "storage", "graphql_public"]
+# 追加の設定
+max_rows = 1000
+
+[db]
+# データベースのポート
+port = 54322
+# プールサイズ
+pool_size = 10
+
+[studio]
+# Supabase Studioのポート
+port = 54323
+
+[inbucket]
+# メールテスト用のInbucketポート
+port = 54324
+
+[storage]
+# ファイルストレージ設定
+file_size_limit = "50MiB"
+
+[auth]
+# 認証設定
+enable_signup = true
+enable_anonymous_sign_ins = false
+
+# 外部プロバイダー設定
+[auth.external.google]
+enabled = true
+client_id = "env(GOOGLE_CLIENT_ID)"
+secret = "env(GOOGLE_CLIENT_SECRET)"
+
+# メール設定
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = true
+
+# セッション設定
+[auth.sessions]
+timebox = 3600
+inactivity_timeout = 0

@@ -1,0 +1,21 @@
+{
+  "fileWatcher": {
+    "enabled": true,
+    "autoApplyChanges": true,
+    "exclude": [
+      "**/node_modules/**",
+      "**/.git/**",
+      "**/.next/**",
+      "**/dist/**",
+      "**/build/**"
+    ]
+  },
+  "permissions": {
+    "fileSystem": {
+      "read": true,
+      "write": true,
+      "create": true,
+      "delete": true
+    }
+  }
+}
