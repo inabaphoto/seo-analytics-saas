@@ -58,10 +58,6 @@ export function createAdminClient() {
         set() {},
         remove() {},
       },
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-      },
     }
   );
 }

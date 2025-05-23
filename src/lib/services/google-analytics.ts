@@ -1,5 +1,4 @@
 import { BetaAnalyticsDataClient, protos } from '@google-analytics/data';
-import { GoogleAuth } from 'google-auth-library';
 import { encryptTokens, decryptTokens } from '@/lib/auth/encryption';
 import { refreshAccessToken } from '@/lib/auth/oauth-utils';
 import { createClient } from '@/lib/supabase/server';
@@ -8,7 +7,8 @@ import { createClient } from '@/lib/supabase/server';
  * Google Analytics 4 (GA4) データ取得サービス
  */
 export class GoogleAnalyticsService {
-  private analyticsDataClient: BetaAnalyticsDataClient | null = null;
+  private accessToken: string | null = null;
+  private refreshToken: string | null = null;
   private userId: string;
 
   constructor(userId: string) {
@@ -18,32 +18,22 @@ export class GoogleAnalyticsService {
   /**
    * 認証済みのGA4クライアントを取得
    */
-  private async getAuthenticatedClient(): Promise<BetaAnalyticsDataClient> {
-    if (this.analyticsDataClient) {
-      return this.analyticsDataClient;
-    }
+  private async initializeClient(accessToken: string, refreshToken: string) {
+    const currentAccessToken = await this.ensureValidToken(accessToken, refreshToken);
 
-    // データベースからトークンを取得
-    const supabase = createClient();
-    const { data: tokenData, error } = await supabase
-      .from('oauth_tokens')
-      .select('access_token, refresh_token, expires_at')
-      .eq('user_id', this.userId)
-      .eq('provider', 'google')
-      .single();
+    // 直接fetch APIを使用してGoogle Analytics Admin APIを呼び出し
+    this.accessToken = currentAccessToken;
+    this.refreshToken = refreshToken;
+    
+    return currentAccessToken;
+  }
 
-    if (error || !tokenData) {
-      throw new Error('Google OAuth トークンが見つかりません');
-    }
-
-    // トークンを復号化
-    const { accessToken, refreshToken } = decryptTokens({
-      encryptedAccessToken: tokenData.access_token,
-      encryptedRefreshToken: tokenData.refresh_token,
-    });
-
+  /**
+   * トークンの有効期限を確認し、有効期限が切れている場合はリフレッシュ
+   */
+  private async ensureValidToken(accessToken: string, refreshToken: string): Promise<string> {
     // トークンの有効期限を確認
-    const expiresAt = new Date(tokenData.expires_at);
+    const expiresAt = new Date();
     const now = new Date();
 
     let currentAccessToken = accessToken;
@@ -65,6 +55,7 @@ export class GoogleAnalyticsService {
         refreshToken: newTokens.refresh_token || refreshToken,
       });
 
+      const supabase = createClient();
       await supabase
         .from('oauth_tokens')
         .update({
@@ -79,18 +70,7 @@ export class GoogleAnalyticsService {
       console.log('✅ アクセストークンをリフレッシュしました');
     }
 
-    // Google Auth ライブラリの設定
-    const auth = new GoogleAuth({
-      credentials: {
-        access_token: currentAccessToken,
-        refresh_token: refreshToken,
-      },
-      scopes: ['https://www.googleapis.com/auth/analytics.readonly'],
-    });
-
-    // Analytics Data API クライアントの作成
-    this.analyticsDataClient = new BetaAnalyticsDataClient({ auth });
-    return this.analyticsDataClient;
+    return currentAccessToken;
   }
 
   /**
@@ -106,43 +86,52 @@ export class GoogleAnalyticsService {
     endDate: string
   ): Promise<GA4ReportData> {
     try {
-      const client = await this.getAuthenticatedClient();
+      // データベースからトークンを取得
+      const supabase = createClient();
+      const { data: tokenData, error } = await supabase
+        .from('oauth_tokens')
+        .select('access_token, refresh_token, expires_at')
+        .eq('user_id', this.userId)
+        .eq('provider', 'google')
+        .single();
+
+      if (error || !tokenData) {
+        throw new Error('Google OAuth トークンが見つかりません');
+      }
+
+      // トークンを復号化
+      const { accessToken, refreshToken } = decryptTokens({
+        encryptedAccessToken: tokenData.access_token,
+        encryptedRefreshToken: tokenData.refresh_token,
+      });
+
+      // 認証済みのクライアントを取得
+      const currentAccessToken = await this.initializeClient(accessToken, refreshToken);
 
       console.log(`📊 GA4レポートを取得中... Property: ${propertyId}, 期間: ${startDate} - ${endDate}`);
 
-      const [response] = await client.runReport({
-        property: `properties/${propertyId}`,
-        dateRanges: [
-          {
-            startDate,
-            endDate,
-          },
-        ],
-        dimensions: [
-          { name: 'date' },
-          { name: 'pagePath' },
-          { name: 'pageTitle' },
-        ],
-        metrics: [
-          { name: 'sessions' },
-          { name: 'screenPageViews' },
-          { name: 'totalUsers' },
-          { name: 'bounceRate' },
-          { name: 'averageSessionDuration' },
-          { name: 'conversions' },
-        ],
-        orderBys: [
-          {
-            desc: true,
-            metric: { metricName: 'sessions' },
-          },
-        ],
-        limit: 10000, // 最大取得件数
+      // 直接fetch APIを使用してGoogle Analytics Admin APIを呼び出し
+      const response = await fetch(`https://analyticsdata.googleapis.com/v1alpha/properties/${propertyId}/reports:run`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${currentAccessToken}`,
+        },
+        body: JSON.stringify({
+          'requests': [
+            {
+              'metric': 'screenPageViews',
+              'dimension': 'pagePath',
+            },
+          ],
+        }),
       });
 
-      console.log(`✅ GA4レポートを取得しました (${response.rows?.length || 0}件)`);
+      const data = await response.json();
 
-      return this.transformGA4Response(response);
+      console.log(`✅ GA4レポートを取得しました (${data.rows?.length || 0}件)`);
+
+      return this.transformGA4Response(data);
     } catch (error) {
       console.error('❌ GA4レポートの取得に失敗:', error);
       throw new Error(`GA4レポートの取得に失敗しました: ${error instanceof Error ? error.message : String(error)}`);
@@ -156,32 +145,52 @@ export class GoogleAnalyticsService {
    */
   async getRealtimeReport(propertyId: string): Promise<GA4RealtimeData> {
     try {
-      const client = await this.getAuthenticatedClient();
+      // データベースからトークンを取得
+      const supabase = createClient();
+      const { data: tokenData, error } = await supabase
+        .from('oauth_tokens')
+        .select('access_token, refresh_token, expires_at')
+        .eq('user_id', this.userId)
+        .eq('provider', 'google')
+        .single();
+
+      if (error || !tokenData) {
+        throw new Error('Google OAuth トークンが見つかりません');
+      }
+
+      // トークンを復号化
+      const { accessToken, refreshToken } = decryptTokens({
+        encryptedAccessToken: tokenData.access_token,
+        encryptedRefreshToken: tokenData.refresh_token,
+      });
+
+      // 認証済みのクライアントを取得
+      const currentAccessToken = await this.initializeClient(accessToken, refreshToken);
 
       console.log(`⚡ GA4リアルタイムデータを取得中... Property: ${propertyId}`);
 
-      const [response] = await client.runRealtimeReport({
-        property: `properties/${propertyId}`,
-        dimensions: [
-          { name: 'pagePath' },
-          { name: 'pageTitle' },
-        ],
-        metrics: [
-          { name: 'activeUsers' },
-          { name: 'screenPageViews' },
-        ],
-        orderBys: [
-          {
-            desc: true,
-            metric: { metricName: 'activeUsers' },
-          },
-        ],
-        limit: 100,
+      // 直接fetch APIを使用してGoogle Analytics Admin APIを呼び出し
+      const response = await fetch(`https://analyticsdata.googleapis.com/v1alpha/properties/${propertyId}/reports:runRealtime`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${currentAccessToken}`,
+        },
+        body: JSON.stringify({
+          'requests': [
+            {
+              'metric': 'activeUsers',
+              'dimension': 'pagePath',
+            },
+          ],
+        }),
       });
 
-      console.log(`✅ GA4リアルタイムデータを取得しました (${response.rows?.length || 0}件)`);
+      const data = await response.json();
 
-      return this.transformGA4RealtimeResponse(response);
+      console.log(`✅ GA4リアルタイムデータを取得しました (${data.rows?.length || 0}件)`);
+
+      return this.transformGA4RealtimeResponse(data);
     } catch (error) {
       console.error('❌ GA4リアルタイムデータの取得に失敗:', error);
       throw new Error(`GA4リアルタイムデータの取得に失敗しました: ${error instanceof Error ? error.message : String(error)}`);
@@ -192,27 +201,29 @@ export class GoogleAnalyticsService {
    * GA4 レスポンスを変換
    */
   private transformGA4Response(
-    response: protos.google.analytics.data.v1beta.IRunReportResponse
+    response: any
   ): GA4ReportData {
     const rows = response.rows || [];
     
-    return {
-      data: rows.map(row => {
-        const dimensions = row.dimensionValues || [];
-        const metrics = row.metricValues || [];
+    const transformedData = rows.map((row: any) => {
+      const dimensions = row.dimensionValues || [];
+      const metrics = row.metricValues || [];
 
-        return {
-          date: dimensions[0]?.value || '',
-          pagePath: dimensions[1]?.value || '',
-          pageTitle: dimensions[2]?.value || '',
-          sessions: parseInt(metrics[0]?.value || '0'),
-          pageViews: parseInt(metrics[1]?.value || '0'),
-          users: parseInt(metrics[2]?.value || '0'),
-          bounceRate: parseFloat(metrics[3]?.value || '0'),
-          avgSessionDuration: parseFloat(metrics[4]?.value || '0'),
-          conversions: parseInt(metrics[5]?.value || '0'),
-        };
-      }),
+      return {
+        date: dimensions[0]?.value || '',
+        pagePath: dimensions[1]?.value || '',
+        pageTitle: dimensions[2]?.value || '',
+        sessions: parseInt(metrics[0]?.value || '0'),
+        pageViews: parseInt(metrics[1]?.value || '0'),
+        users: parseInt(metrics[2]?.value || '0'),
+        bounceRate: parseFloat(metrics[3]?.value || '0'),
+        avgSessionDuration: parseFloat(metrics[4]?.value || '0'),
+        conversions: parseInt(metrics[5]?.value || '0'),
+      };
+    });
+
+    return {
+      data: transformedData,
       totalRows: response.rowCount || 0,
       samplingMetadatas: response.metadata?.samplingMetadatas || [],
     };
@@ -222,22 +233,24 @@ export class GoogleAnalyticsService {
    * GA4 リアルタイムレスポンスを変換
    */
   private transformGA4RealtimeResponse(
-    response: protos.google.analytics.data.v1beta.IRunRealtimeReportResponse
+    response: any
   ): GA4RealtimeData {
     const rows = response.rows || [];
     
-    return {
-      data: rows.map(row => {
-        const dimensions = row.dimensionValues || [];
-        const metrics = row.metricValues || [];
+    const transformedData = rows.map((row: any) => {
+      const dimensions = row.dimensionValues || [];
+      const metrics = row.metricValues || [];
 
-        return {
-          pagePath: dimensions[0]?.value || '',
-          pageTitle: dimensions[1]?.value || '',
-          activeUsers: parseInt(metrics[0]?.value || '0'),
-          pageViews: parseInt(metrics[1]?.value || '0'),
-        };
-      }),
+      return {
+        pagePath: dimensions[0]?.value || '',
+        pageTitle: dimensions[1]?.value || '',
+        activeUsers: parseInt(metrics[0]?.value || '0'),
+        pageViews: parseInt(metrics[1]?.value || '0'),
+      };
+    });
+
+    return {
+      data: transformedData,
       totalRows: response.rowCount || 0,
       timestamp: new Date().toISOString(),
     };

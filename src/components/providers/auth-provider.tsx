@@ -26,7 +26,38 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const router = useRouter();
   const supabase = createClientComponentClient();
 
+  // 開発環境での認証スキップ設定
+  const isDevelopment = process.env.NODE_ENV === 'development';
+  const skipAuth = isDevelopment && process.env.NEXT_PUBLIC_SKIP_AUTH === 'true';
+
   useEffect(() => {
+    // 開発環境で認証をスキップする場合
+    if (skipAuth) {
+      console.log(' AuthProvider: ');
+      // 
+      const mockUser: User = {
+        id: 'dev-user-id',
+        email: 'dev@example.com',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        aud: 'authenticated',
+        app_metadata: {},
+        user_metadata: { full_name: '' },
+      };
+      const mockSession: Session = {
+        access_token: 'mock-access-token',
+        refresh_token: 'mock-refresh-token',
+        expires_in: 3600,
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+        token_type: 'bearer',
+        user: mockUser,
+      };
+      setSession(mockSession);
+      setUser(mockUser);
+      setLoading(false);
+      return;
+    }
+
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -34,20 +65,20 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       setUser(session?.user ?? null);
       setLoading(false);
 
-      // ログイン成功時にダッシュボードにリダイレクト
+      // 
       if (event === 'SIGNED_IN') {
-        // 初期ユーザー登録処理
+        // 
         if (session?.user) {
           try {
             await handleNewUser(session.user);
           } catch (error) {
-            console.error('新規ユーザー登録中にエラーが発生しました:', error);
+            console.error(':', error);
           }
         }
-        router.push('/dashboard');
+        router.push('/');
       }
 
-      // ログアウト時にログインページにリダイレクト
+      // 
       if (event === 'SIGNED_OUT') {
         router.push('/login');
       }
@@ -56,10 +87,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return () => {
       subscription.unsubscribe();
     };
-  }, [router, supabase]);
+  }, [router, supabase, skipAuth]);
 
   const handleNewUser = async (user: User) => {
-    // 新規ユーザーの初期登録処理
+    // 
     try {
       const { data: existingUser } = await supabase
         .from('users')
@@ -68,7 +99,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         .single();
 
       if (!existingUser && user.email) {
-        // テナント作成
+        // 
         const { data: newTenant, error: tenantError } = await supabase
           .from('tenants')
           .insert({
@@ -79,11 +110,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           .single();
 
         if (tenantError) {
-          console.error('テナント作成エラー:', tenantError);
-          throw new Error('テナントの作成に失敗しました');
+          console.error(': ', tenantError);
+          throw new Error('');
         }
 
-        // ユーザー作成
+        // 
         const { error: userError } = await supabase.from('users').insert({
           id: user.id,
           email: user.email,
@@ -93,22 +124,28 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         });
 
         if (userError) {
-          console.error('ユーザー作成エラー:', userError);
-          throw new Error('ユーザーの作成に失敗しました');
+          console.error(': ', userError);
+          throw new Error('');
         }
       }
     } catch (error) {
-      console.error('ユーザー登録処理エラー:', error);
+      console.error(': ', error);
       throw error;
     }
   };
 
   const signOut = async () => {
     try {
+      // 
+      if (skipAuth) {
+        console.log(' AuthProvider: ');
+        return;
+      }
+      
       await supabase.auth.signOut();
       router.push('/login');
     } catch (error) {
-      console.error('ログアウトエラー:', error);
+      console.error(': ', error);
     }
   };
 
@@ -122,7 +159,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {
-    throw new Error('useAuth は AuthProvider 内で使用する必要があります');
+    throw new Error('useAuth ');
   }
   return context;
 };

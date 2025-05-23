@@ -4,6 +4,16 @@ import { createMiddlewareClient } from '@supabase/auth-helpers-nextjs';
 
 export async function middleware(request: NextRequest) {
   const res = NextResponse.next();
+  
+  // 開発環境では認証をスキップ
+  const isDev = process.env.NODE_ENV === 'development';
+  const skipAuth = isDev && process.env.SKIP_AUTH === 'true';
+  
+  if (skipAuth) {
+    console.log('🔧 開発環境: 認証をスキップします');
+    return res;
+  }
+
   const supabase = createMiddlewareClient({ req: request, res });
 
   const {
@@ -24,9 +34,18 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL('/dashboard', request.url));
   }
 
+  // ルートアクセスの処理
+  if (request.nextUrl.pathname === '/') {
+    if (session) {
+      return NextResponse.redirect(new URL('/dashboard', request.url));
+    } else {
+      return NextResponse.redirect(new URL('/login', request.url));
+    }
+  }
+
   return res;
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/login'],
+  matcher: ['/dashboard/:path*', '/login', '/'],
 };

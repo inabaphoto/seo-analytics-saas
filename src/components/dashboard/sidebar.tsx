@@ -7,19 +7,19 @@ import { cn } from '@/lib/utils';
 
 const items = [
   {
-    href: '/dashboard',
+    href: '/',
     icon: LayoutDashboard,
     label: 'ダッシュボード',
   },
   {
-    href: '/dashboard/reports',
-    icon: BarChart2,
-    label: 'レポート',
+    href: '/setup-sites',
+    icon: Settings,
+    label: 'サイト設定',
   },
   {
-    href: '/dashboard/settings',
-    icon: Settings,
-    label: '設定',
+    href: '/test',
+    icon: BarChart2,
+    label: 'テスト',
   },
 ];
 

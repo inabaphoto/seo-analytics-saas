@@ -9,13 +9,21 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const supabase = createServerComponentClient({ cookies });
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
+  // 開発環境での認証スキップ設定
+  const isDevelopment = process.env.NODE_ENV === 'development';
+  const skipAuth = isDevelopment && process.env.SKIP_AUTH === 'true';
 
-  if (!session) {
-    redirect('/login');
+  if (!skipAuth) {
+    const supabase = createServerComponentClient({ cookies });
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session) {
+      redirect('/login');
+    }
+  } else {
+    console.log('🔧 DashboardLayout: 開発環境で認証をスキップ');
   }
 
   return (

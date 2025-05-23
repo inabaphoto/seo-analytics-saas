@@ -5,12 +5,21 @@ import { useState, useEffect } from 'react';
 /**
  * OAuth2フローテスト用ページ
  */
+
+interface ApiResult {
+  timestamp: string;
+  endpoint: string;
+  status: 'success' | 'error';
+  data: any;
+}
+
 export default function TestPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [oauthSuccess, setOauthSuccess] = useState<string | null>(null);
   const [isMounted, setIsMounted] = useState(false);
+  const [results, setResults] = useState<ApiResult[]>([]);
 
   // マウント状態を管理してハイドレーションエラーを防ぐ
   useEffect(() => {
@@ -69,7 +78,7 @@ export default function TestPage() {
       }
     } catch (err) {
       console.error('❌ Google OAuth認証エラー:', err);
-      setError(err instanceof Error ? err.message : String(err));
+      setError(String(err));
     } finally {
       setIsLoading(false);
     }
@@ -114,7 +123,7 @@ export default function TestPage() {
             console.log(`❌ ${test.name} 失敗: Status ${status}`);
           }
         } catch (err) {
-          allResults += `${test.name}: ❌ エラー (${err instanceof Error ? err.message : String(err)})\n`;
+          allResults += `${test.name}: ❌ エラー (${String(err)})\n`;
           console.error(`❌ ${test.name} エラー:`, err);
         }
       }
@@ -122,7 +131,7 @@ export default function TestPage() {
       setTestResult(allResults);
     } catch (err) {
       console.error('❌ APIテストエラー:', err);
-      setError(err instanceof Error ? err.message : String(err));
+      setError(String(err));
     } finally {
       setIsLoading(false);
     }
@@ -150,7 +159,7 @@ export default function TestPage() {
       setTestResult(`GA4プロパティ取得成功: ${data.properties?.length || 0}件のプロパティ`);
     } catch (err) {
       console.error('❌ GA4プロパティ取得エラー:', err);
-      setError(err instanceof Error ? err.message : String(err));
+      setError(String(err));
     } finally {
       setIsLoading(false);
     }
@@ -178,7 +187,7 @@ export default function TestPage() {
       setTestResult(`GSCサイト取得成功: ${data.sites?.all?.length || 0}件のサイト`);
     } catch (err) {
       console.error('❌ GSCサイト取得エラー:', err);
-      setError(err instanceof Error ? err.message : String(err));
+      setError(String(err));
     } finally {
       setIsLoading(false);
     }
@@ -207,7 +216,80 @@ export default function TestPage() {
       setTestResult('認証情報をクリアしました。新しい認証を開始してください。');
     } catch (err) {
       console.error('❌ 認証情報クリアエラー:', err);
-      setError(err instanceof Error ? err.message : String(err));
+      setError(String(err));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const clearAuth = async () => {
+    try {
+      setIsLoading(true);
+      const response = await fetch('/api/auth/clear', {
+        method: 'POST'
+      });
+      
+      if (response.ok) {
+        setResults(prev => [...prev, { 
+          timestamp: new Date().toLocaleString(),
+          endpoint: '認証クリア',
+          status: 'success',
+          data: '認証情報をクリアしました。ページをリロードしてください。'
+        }]);
+        
+        setTimeout(() => {
+          window.location.reload();
+        }, 2000);
+      } else {
+        throw new Error('認証クリアに失敗しました');
+      }
+    } catch (error) {
+      setResults(prev => [...prev, { 
+        timestamp: new Date().toLocaleString(),
+        endpoint: '認証クリア',
+        status: 'error',
+        data: String(error)
+      }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // API構造確認機能
+  const debugApiStructure = async () => {
+    try {
+      setIsLoading(true);
+      setResults([]);
+      
+      // GA4構造確認
+      const ga4Response = await fetch('/api/debug/ga4-structure');
+      const ga4Data = await ga4Response.json();
+      
+      setResults(prev => [...prev, {
+        timestamp: new Date().toLocaleString(),
+        endpoint: 'GA4構造確認',
+        status: ga4Response.ok ? 'success' : 'error',
+        data: ga4Data
+      }]);
+
+      // GSC構造確認
+      const gscResponse = await fetch('/api/debug/gsc-structure');
+      const gscData = await gscResponse.json();
+      
+      setResults(prev => [...prev, {
+        timestamp: new Date().toLocaleString(),
+        endpoint: 'GSC構造確認',
+        status: gscResponse.ok ? 'success' : 'error',
+        data: gscData
+      }]);
+
+    } catch (error) {
+      setResults(prev => [...prev, { 
+        timestamp: new Date().toLocaleString(),
+        endpoint: 'API構造確認',
+        status: 'error',
+        data: String(error)
+      }]);
     } finally {
       setIsLoading(false);
     }
@@ -290,6 +372,13 @@ export default function TestPage() {
               🧹 認証情報をクリア
             </button>
 
+            <button
+              onClick={debugApiStructure}
+              className="w-full px-6 py-3 bg-yellow-600 text-white rounded-md font-medium hover:bg-yellow-700 focus:outline-none focus:ring-2 focus:ring-yellow-500 transition-colors"
+            >
+              🔍 API構造確認
+            </button>
+
           </div>
 
           {/* 結果表示エリア */}
@@ -313,6 +402,24 @@ export default function TestPage() {
             <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-md">
               <h3 className="text-sm font-medium text-green-800 mb-2">OAuth認証結果:</h3>
               <p className="text-sm text-green-700">{oauthSuccess}</p>
+            </div>
+          )}
+
+          {results.length > 0 && (
+            <div className="mt-6 p-4 bg-gray-50 border border-gray-200 rounded-md">
+              <h3 className="text-sm font-medium text-gray-800 mb-2">API構造確認結果:</h3>
+              <ul className="text-xs text-gray-600 space-y-1">
+                {results.map((result, index) => (
+                  <li key={index}>
+                    <span className={`text-${result.status === 'success' ? 'green' : 'red'}-700`}>
+                      {result.timestamp} - {result.endpoint} ({result.status})
+                    </span>
+                    <pre className="text-xs text-gray-600 whitespace-pre-wrap text-left">
+                      {JSON.stringify(result.data, null, 2)}
+                    </pre>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
 

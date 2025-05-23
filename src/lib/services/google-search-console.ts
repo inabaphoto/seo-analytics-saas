@@ -1,14 +1,13 @@
-import { GoogleAuth } from 'google-auth-library';
-import { google } from 'googleapis';
 import { encryptTokens, decryptTokens } from '@/lib/auth/encryption';
 import { refreshAccessToken } from '@/lib/auth/oauth-utils';
 import { createClient } from '@/lib/supabase/server';
 
 /**
- * Google Search Console (GSC) データ取得サービス
+ * Google Search Console データ取得サービス
  */
 export class GoogleSearchConsoleService {
-  private searchConsoleClient: any = null;
+  private accessToken: string | null = null;
+  private refreshToken: string | null = null;
   private userId: string;
 
   constructor(userId: string) {
@@ -16,13 +15,22 @@ export class GoogleSearchConsoleService {
   }
 
   /**
-   * 認証済みのGSCクライアントを取得
+   * 認証済みのクライアントを初期化
    */
-  private async getAuthenticatedClient() {
-    if (this.searchConsoleClient) {
-      return this.searchConsoleClient;
-    }
+  private async initializeClient(accessToken: string, refreshToken: string) {
+    const currentAccessToken = await this.ensureValidToken(accessToken, refreshToken);
 
+    // 直接fetch APIを使用してGoogle Search Console APIを呼び出し
+    this.accessToken = currentAccessToken;
+    this.refreshToken = refreshToken;
+    
+    return currentAccessToken;
+  }
+
+  /**
+   * トークンの有効期限を確認し、有効期限が切れている場合はリフレッシュ
+   */
+  private async ensureValidToken(accessToken: string, refreshToken: string): Promise<string> {
     // データベースからトークンを取得
     const supabase = createClient();
     const { data: tokenData, error } = await supabase
@@ -37,7 +45,7 @@ export class GoogleSearchConsoleService {
     }
 
     // トークンを復号化
-    const { accessToken, refreshToken } = decryptTokens({
+    const { accessToken: decryptedAccessToken, refreshToken: decryptedRefreshToken } = decryptTokens({
       encryptedAccessToken: tokenData.access_token,
       encryptedRefreshToken: tokenData.refresh_token,
     });
@@ -46,7 +54,7 @@ export class GoogleSearchConsoleService {
     const expiresAt = new Date(tokenData.expires_at);
     const now = new Date();
 
-    let currentAccessToken = accessToken;
+    let currentAccessToken = decryptedAccessToken;
 
     // 有効期限が切れている場合はリフレッシュ
     if (expiresAt <= now) {
@@ -55,14 +63,14 @@ export class GoogleSearchConsoleService {
       const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID!;
       const clientSecret = process.env.GOOGLE_CLIENT_SECRET!;
       
-      const newTokens = await refreshAccessToken(refreshToken, clientId, clientSecret);
+      const newTokens = await refreshAccessToken(decryptedRefreshToken, clientId, clientSecret);
       currentAccessToken = newTokens.access_token;
 
       // 新しいトークンをデータベースに保存
       const newExpiresAt = new Date(Date.now() + (newTokens.expires_in * 1000));
       const newEncryptedTokens = encryptTokens({
         accessToken: newTokens.access_token,
-        refreshToken: newTokens.refresh_token || refreshToken,
+        refreshToken: newTokens.refresh_token || decryptedRefreshToken,
       });
 
       await supabase
@@ -79,18 +87,7 @@ export class GoogleSearchConsoleService {
       console.log('✅ GSC用アクセストークンをリフレッシュしました');
     }
 
-    // Google Auth ライブラリの設定
-    const auth = new GoogleAuth({
-      credentials: {
-        access_token: currentAccessToken,
-        refresh_token: refreshToken,
-      },
-      scopes: ['https://www.googleapis.com/auth/webmasters.readonly'],
-    });
-
-    // Search Console API クライアントの作成
-    this.searchConsoleClient = google.searchconsole({ version: 'v1', auth });
-    return this.searchConsoleClient;
+    return currentAccessToken;
   }
 
   /**
@@ -99,12 +96,40 @@ export class GoogleSearchConsoleService {
    */
   async getSiteList(): Promise<GSCSiteData[]> {
     try {
-      const client = await this.getAuthenticatedClient();
+      // データベースからトークンを取得
+      const supabase = createClient();
+      const { data: tokenData, error } = await supabase
+        .from('oauth_tokens')
+        .select('access_token, refresh_token, expires_at')
+        .eq('user_id', this.userId)
+        .eq('provider', 'google')
+        .single();
+
+      if (error || !tokenData) {
+        throw new Error('Google OAuth トークンが見つかりません');
+      }
+
+      // トークンを復号化
+      const { accessToken, refreshToken } = decryptTokens({
+        encryptedAccessToken: tokenData.access_token,
+        encryptedRefreshToken: tokenData.refresh_token,
+      });
+
+      // 認証済みのクライアントを取得
+      const currentAccessToken = await this.initializeClient(accessToken, refreshToken);
 
       console.log('🔍 GSCサイトリストを取得中...');
 
-      const response = await client.sites.list();
-      const sites = response.data.siteEntry || [];
+      const response = await fetch(`https://www.googleapis.com/webmasters/v3/sites`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${currentAccessToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const data = await response.json();
+      const sites = data.siteEntry || [];
 
       console.log(`✅ GSCサイトリストを取得しました (${sites.length}件)`);
 
@@ -133,22 +158,47 @@ export class GoogleSearchConsoleService {
     dimensions: GSCDimension[] = ['query', 'page']
   ): Promise<GSCSearchPerformanceData> {
     try {
-      const client = await this.getAuthenticatedClient();
+      // データベースからトークンを取得
+      const supabase = createClient();
+      const { data: tokenData, error } = await supabase
+        .from('oauth_tokens')
+        .select('access_token, refresh_token, expires_at')
+        .eq('user_id', this.userId)
+        .eq('provider', 'google')
+        .single();
+
+      if (error || !tokenData) {
+        throw new Error('Google OAuth トークンが見つかりません');
+      }
+
+      // トークンを復号化
+      const { accessToken, refreshToken } = decryptTokens({
+        encryptedAccessToken: tokenData.access_token,
+        encryptedRefreshToken: tokenData.refresh_token,
+      });
+
+      // 認証済みのクライアントを取得
+      const currentAccessToken = await this.initializeClient(accessToken, refreshToken);
 
       console.log(`📈 GSC検索パフォーマンスを取得中... Site: ${siteUrl}, 期間: ${startDate} - ${endDate}`);
 
-      const response = await client.searchanalytics.query({
-        siteUrl: siteUrl,
-        requestBody: {
+      const response = await fetch(`https://www.googleapis.com/webmasters/v3/sites/${siteUrl}/searchAnalytics/query`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${currentAccessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
           startDate: startDate,
           endDate: endDate,
           dimensions: dimensions,
-          rowLimit: 25000, // 最大取得件数
+          rowLimit: 25000,
           startRow: 0,
-        },
+        }),
       });
 
-      const rows = response.data.rows || [];
+      const data = await response.json();
+      const rows = data.rows || [];
 
       console.log(`✅ GSC検索パフォーマンスを取得しました (${rows.length}件)`);
 
@@ -179,23 +229,47 @@ export class GoogleSearchConsoleService {
    */
   async getIndexStatus(siteUrl: string): Promise<GSCIndexData> {
     try {
-      const client = await this.getAuthenticatedClient();
+      // データベースからトークンを取得
+      const supabase = createClient();
+      const { data: tokenData, error } = await supabase
+        .from('oauth_tokens')
+        .select('access_token, refresh_token, expires_at')
+        .eq('user_id', this.userId)
+        .eq('provider', 'google')
+        .single();
+
+      if (error || !tokenData) {
+        throw new Error('Google OAuth トークンが見つかりません');
+      }
+
+      // トークンを復号化
+      const { accessToken, refreshToken } = decryptTokens({
+        encryptedAccessToken: tokenData.access_token,
+        encryptedRefreshToken: tokenData.refresh_token,
+      });
+
+      // 認証済みのクライアントを取得
+      const currentAccessToken = await this.initializeClient(accessToken, refreshToken);
 
       console.log(`📑 GSCインデックス状況を取得中... Site: ${siteUrl}`);
 
-      // インデックス状況のクエリ（カバレッジレポート）
-      const response = await client.searchanalytics.query({
-        siteUrl: siteUrl,
-        requestBody: {
+      const response = await fetch(`https://www.googleapis.com/webmasters/v3/sites/${siteUrl}/searchAnalytics/query`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${currentAccessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
           startDate: this.getDateDaysAgo(90), // 過去90日
           endDate: this.getDateDaysAgo(0), // 今日
           dimensions: ['page'],
           rowLimit: 25000,
           startRow: 0,
-        },
+        }),
       });
 
-      const rows = response.data.rows || [];
+      const data = await response.json();
+      const rows = data.rows || [];
 
       console.log(`✅ GSCインデックス状況を取得しました (${rows.length}件)`);
 
